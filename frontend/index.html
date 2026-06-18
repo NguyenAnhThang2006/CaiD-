@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PFIG-LLM | Tối ưu hóa giao thông thông minh Hà Nội</title>
+    
+    <!-- Premium Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Leaflet Map CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
+    
+    <!-- Custom Style Sheet -->
+    <link rel="stylesheet" href="style.css">
+
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['$', '$']],
+                displayMath: [['$$', '$$']]
+            }
+        };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo">
+                <i class="fa-solid fa-compass-drafting brand-icon"></i>
+                <div class="brand-text">
+                    <h1>PFIG-LLM Routing</h1>
+                    <span>Picture Fuzzy Incident Graph & AI Traffic Optimizer</span>
+                </div>
+            </div>
+            <div class="env-controls">
+                <div class="control-group">
+                    <label><i class="fa-solid fa-cloud-sun"></i> Thời tiết</label>
+                    <select id="weather-select">
+                        <option value="sunny">Nắng ráo (Sunny)</option>
+                        <option value="rainy">Mưa phùn (Rainy)</option>
+                        <option value="stormy">Mưa giông lớn (Stormy)</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label><i class="fa-solid fa-clock"></i> Khung giờ</label>
+                    <select id="time-select">
+                        <option value="off_peak">Bình thường (Off-Peak)</option>
+                        <option value="morning_rush">Cao điểm Sáng (7:30 - 9:00)</option>
+                        <option value="evening_rush">Cao điểm Chiều (17:00 - 18:30)</option>
+                        <option value="night">Đêm muộn (Night)</option>
+                    </select>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content Layout -->
+        <main class="app-main">
+            
+            <!-- Sidebar: Parameters & Controls -->
+            <aside class="sidebar card">
+                <div class="card-header">
+                    <h2><i class="fa-solid fa-sliders"></i> Cấu hình tìm đường</h2>
+                </div>
+                
+                <!-- API Config -->
+                <div class="config-section">
+                    <h3 class="section-title"><i class="fa-solid fa-key"></i> API Keys (Tùy chọn)</h3>
+                    <div class="input-group">
+                        <input type="password" id="gemini-key" placeholder="Nhập Gemini API Key...">
+                        <button id="save-keys-btn" title="Lưu API Key"><i class="fa-solid fa-floppy-disk"></i></button>
+                    </div>
+                    <small class="hint">Mặc định hệ thống dùng Mock AI để chạy demo mượt mà.</small>
+                </div>
+
+                <!-- Route Selection -->
+                <div class="config-section">
+                    <h3 class="section-title"><i class="fa-solid fa-route"></i> Điểm đi & Điểm đến</h3>
+                    <div class="control-row">
+                        <label>Điểm đi</label>
+                        <select id="source-select">
+                            <!-- Populated by JS -->
+                        </select>
+                    </div>
+                    <div class="control-row">
+                        <label>Điểm đến</label>
+                        <select id="target-select">
+                            <!-- Populated by JS -->
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Fuzzy Weights Sliders (P, N, n) -->
+                <div class="config-section">
+                    <h3 class="section-title">
+                        <i class="fa-solid fa-scale-balanced"></i> Trọng số mờ (Fuzzy Weights)
+                        <span class="sum-badge" id="sum-badge">Tổng: 1.0</span>
+                    </h3>
+                    <div class="slider-group">
+                        <div class="slider-header">
+                            <span class="lbl emerald"><i class="fa-solid fa-circle-check"></i> Alpha (Ưu thích - P)</span>
+                            <span class="val" id="alpha-val">0.50</span>
+                        </div>
+                        <input type="range" id="alpha-slider" min="0" max="1" step="0.05" value="0.5">
+                    </div>
+                    <div class="slider-group">
+                        <div class="slider-header">
+                            <span class="lbl amber"><i class="fa-solid fa-circle-question"></i> Beta (Do dự - N)</span>
+                            <span class="val" id="beta-val">0.30</span>
+                        </div>
+                        <input type="range" id="beta-slider" min="0" max="1" step="0.05" value="0.3">
+                    </div>
+                    <div class="slider-group">
+                        <div class="slider-header">
+                            <span class="lbl crimson"><i class="fa-solid fa-circle-xmark"></i> Gamma (Tránh kẹt - n)</span>
+                            <span class="val" id="gamma-val">0.20</span>
+                        </div>
+                        <input type="range" id="gamma-slider" min="0" max="1" step="0.05" value="0.2">
+                    </div>
+                    <small class="hint">Kéo thanh trượt để tối ưu hóa sự cân bằng giữa đường đi ngắn nhất, giảm bất ổn mờ và tránh ùn tắc.</small>
+                </div>
+
+                <!-- Real-world Input Configuration (OSM, VietMap, OpenWeather, Hanoi Open Data) -->
+                <div class="config-section" id="realworld-config-section">
+                    <h3 class="section-title"><i class="fa-solid fa-earth-asia"></i> Dữ liệu thế giới thật (APIs)</h3>
+                    
+                    <div id="realworld-select-node-edge" class="small-text hint" style="margin-bottom: 4px;">
+                        Nhấp một con đường hoặc nút giao trên bản đồ để xem và chỉnh sửa dữ liệu API trực tiếp.
+                    </div>
+                    
+                    <div id="realworld-controls" class="hidden">
+                        <div class="small-text" style="font-weight: 600; color: var(--primary); margin-bottom: 8px;" id="rw-target-title">Đang chọn: My Dinh &harr; Cau Giay</div>
+                        
+                        <div class="control-row">
+                            <label><i class="fa-brands fa-openstreetmap"></i> 1. Loại đường (OpenStreetMap)</label>
+                            <select id="rw-road-type">
+                                <option value="highway">Cao tốc (Highway)</option>
+                                <option value="urban">Đô thị chính (Urban Arterial)</option>
+                                <option value="local">Ngõ hẻm / Nhỏ (Local)</option>
+                            </select>
+                        </div>
+                        
+                        <div class="control-row" style="margin-top: 8px;">
+                            <label><i class="fa-solid fa-car"></i> 2. Mật độ kẹt xe (VietMap Traffic)</label>
+                            <div class="slider-header">
+                                <span>Tỷ lệ kẹt xe</span>
+                                <span class="val" id="rw-density-val">30%</span>
+                            </div>
+                            <input type="range" id="rw-density" min="0" max="1" step="0.05" value="0.3">
+                        </div>
+                        
+                        <div class="control-row" style="margin-top: 8px;">
+                            <label><i class="fa-solid fa-cloud-showers-water"></i> 3. Thời tiết (OpenWeather)</label>
+                            <div class="small-text" style="color: var(--text-secondary); font-family: var(--font-mono); margin-top: 4px;" id="rw-weather-val">sunny (Lấy từ Header)</div>
+                        </div>
+                        
+                        <div class="control-row" style="margin-top: 8px;">
+                            <label><i class="fa-solid fa-triangle-exclamation"></i> 4. Tai nạn / An toàn (Hanoi Open Data)</label>
+                            <div class="slider-header">
+                                <span>Nguy cơ tai nạn</span>
+                                <span class="val" id="rw-safety-val">10%</span>
+                            </div>
+                            <input type="range" id="rw-safety" min="0" max="1" step="0.05" value="0.1">
+                        </div>
+                        
+                        <button id="rw-update-btn" class="secondary-btn" style="width: 100%; justify-content: center; margin-top: 12px; font-weight: 600; background: rgba(115, 103, 240, 0.1); border-color: var(--primary);">
+                            <i class="fa-solid fa-arrows-rotate"></i> Cập nhật & Tính mờ
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Step-by-Step Transition Math Display -->
+                <div class="config-section hidden" id="math-transition-section">
+                    <h3 class="section-title" style="font-size: 0.75rem;"><i class="fa-solid fa-calculator"></i> Logic chuyển đổi mờ</h3>
+                    <div id="math-transition-box" class="small-text" style="background: rgba(0, 0, 0, 0.25); padding: 10px; border-radius: 8px; font-family: var(--font-mono); line-height: 1.4; border: 1px solid rgba(255,255,255,0.03); max-height: 250px; overflow-y: auto; color: var(--text-secondary);">
+                        <!-- Math transition calculation filled by JS -->
+                    </div>
+                </div>
+
+                <!-- Trigger Button -->
+                <button id="route-btn" class="primary-btn"><i class="fa-solid fa-compass"></i> Tìm lộ trình tối ưu</button>
+            </aside>
+
+            <!-- Center/Right: Map & Analytics -->
+            <div class="content-area">
+                
+                <!-- Leaflet Map Container -->
+                <div class="map-container card">
+                    <div id="map"></div>
+                    <!-- Legend overlay -->
+                    <div class="map-legend">
+                        <div class="legend-item"><span class="legend-line line-pfig"></span><span>Đường đi PFIG (Fuzzy)</span></div>
+                        <div class="legend-item"><span class="legend-line line-dijkstra"></span><span>Dijkstra (Mặc định)</span></div>
+                    </div>
+                </div>
+
+                <!-- Traffic News Ticker (VOV Ticker) -->
+                <div class="ticker-container card">
+                    <div class="ticker-header">
+                        <span class="ticker-title"><i class="fa-solid fa-radio"></i> VOV Giao thông</span>
+                    </div>
+                    <div class="ticker-content" id="vov-ticker">
+                        <!-- Clickable scrolling logs populated by JS -->
+                    </div>
+                    <div class="ticker-actions">
+                        <button id="refresh-vov-btn" title="Cập nhật bản tin"><i class="fa-solid fa-arrows-rotate"></i></button>
+                    </div>
+                </div>
+
+                <!-- Analytics Metrics & LLM Explanation Grid -->
+                <div class="results-grid">
+                    
+                    <!-- Metrics Card -->
+                    <div class="metrics-card card">
+                        <div class="card-header">
+                            <h2><i class="fa-solid fa-chart-simple"></i> So sánh hiệu năng lộ trình</h2>
+                        </div>
+                        
+                        <div class="comparison-table-container">
+                            <table class="comparison-table">
+                                <thead>
+                                    <tr>
+                                        <th>Chỉ số</th>
+                                        <th>Dijkstra (Google)</th>
+                                        <th>Lõi PFIG (Fuzzy)</th>
+                                        <th>Thay đổi</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>Khoảng cách (km)</td>
+                                        <td id="m-dijkstra-dist">-</td>
+                                        <td id="m-pfig-dist">-</td>
+                                        <td id="m-dist-diff" class="neutral">-</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Thời gian đi (phút)</td>
+                                        <td id="m-dijkstra-time">-</td>
+                                        <td id="m-pfig-time">-</td>
+                                        <td id="m-time-diff" class="positive">-</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Thời gian trễ (phút)</td>
+                                        <td id="m-dijkstra-delay">-</td>
+                                        <td id="m-pfig-delay">-</td>
+                                        <td id="m-delay-diff" class="positive">-</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Độ mờ Is (P, N, n)</td>
+                                        <td id="m-dijkstra-fuzzy" class="small-text">-</td>
+                                        <td id="m-pfig-fuzzy" class="small-text">-</td>
+                                        <td>-</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <!-- Bar Chart Container -->
+                        <div class="chart-container">
+                            <canvas id="comparison-chart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Explanations Card (LLM explainable interface) -->
+                    <div class="explain-card card">
+                        <div class="card-header">
+                            <h2><i class="fa-solid fa-brain"></i> Trợ lý AI giải thích lộ trình</h2>
+                            <span class="xai-badge" title="Explainable AI">XAI Enabled</span>
+                        </div>
+                        <div class="explain-content" id="explain-box">
+                            <div class="empty-state">
+                                <i class="fa-solid fa-route"></i>
+                                <p>Bắt đầu tìm lộ trình tối ưu để nhận giải thích chi tiết từ mô hình AI.</p>
+                            </div>
+                        </div>
+                        <div class="explain-footer">
+                            <button id="explain-btn" class="secondary-btn" disabled><i class="fa-solid fa-comment-dots"></i> Yêu cầu AI phân tích sâu</button>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- Math Log Details (Step-by-step PFIG calculation) -->
+                <div class="math-card card">
+                    <div class="card-header" id="math-header">
+                        <h2><i class="fa-solid fa-square-root-variable"></i> Nhật ký tính toán số mờ PFIG (Step-by-step Math Log)</h2>
+                        <i class="fa-solid fa-chevron-down fold-icon"></i>
+                    </div>
+                    <div class="math-content hidden" id="math-box">
+                        <div class="empty-state">
+                            <p>Chọn tìm lộ trình để xem chi tiết cách tính toán bộ ba số mờ $I_s$ tích lũy.</p>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+            
+        </main>
+        
+        <!-- Footer -->
+        <footer class="app-footer-bar">
+            <p>&copy; 2026 Picture Fuzzy Incident Graph (PFIG) Research. Phát triển bởi nhóm nghiên cứu giao thông Hà Nội.</p>
+        </footer>
+    </div>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Leaflet Map JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    
+    <!-- Custom Application JS -->
+    <script src="app.js"></script>
+</body>
+</html>
