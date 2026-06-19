@@ -1,5 +1,6 @@
 import networkx as nx
 import numpy as np
+import math
 
 import osm_routing
 from real_world_converter import convert_physical_to_fuzzy
@@ -505,3 +506,90 @@ class PFIGGraph:
         # Ép đồ thị cập nhật lại ma trận liên thuộc M trước khi chạy Dijkstra cải tiến
         self.func_3_3_1_compute_incidence()
         return self.func_6_3_1_compute_pfig_route(source, target, alpha, beta, gamma)
+    
+    def inject_temporary_click_node(self, clicked_lat, clicked_lng, virtual_node_id="V_CLICK"):
+        """
+        Advanced Dynamic Graph Connection:
+        Tạo hẳn nút ảo tại vị trí click tự do, sau đó kết nối nút ảo này vào 
+        2 đầu nút giao thực tế gần nhất bằng đường thẳng ngắn (hoặc điểm chiếu),
+        giúp thuật toán Dijkstra tìm được đường đi mượt mà từ điểm tự do vào trục chính.
+        """
+        closest_edge = None
+        min_distance = float('inf')
+        best_projection = None
+        best_geometry_index = 0
+
+        # 1. Tìm cạnh không gian (OSM Geometry) gần điểm click nhất
+        for u, v, attrs in self.G.edges(data=True):
+            geometry = attrs.get("geometry", [])
+            if len(geometry) < 2:
+                continue
+                
+            for i in range(len(geometry) - 1):
+                p1 = geometry[i]
+                p2 = geometry[i+1]
+                
+                dist, proj_point = self._point_to_segment_distance(clicked_lat, clicked_lng, p1[0], p1[1], p2[0], p2[1])
+                
+                if dist < min_distance:
+                    min_distance = dist
+                    closest_edge = (u, v)
+                    best_projection = proj_point
+                    best_geometry_index = i
+
+        # Giới hạn sai số ~1.5km quanh hành lang giao thông demo
+        if not closest_edge or min_distance > 0.015: 
+            return None
+
+        u, v = closest_edge
+        edge_attrs = self.G[u][v]
+
+        # 2. Thêm Node ảo tại ĐÚNG tọa độ người dùng click chuột (chứ không phải điểm chiếu)
+        self.G.add_node(virtual_node_id, 
+                        coords=(clicked_lat, clicked_lng),
+                        P=0.6, N=0.2, n=0.2, # Chỉ số mờ xuất phát tối ưu
+                        road_type="local",
+                        traffic_density=0.1,
+                        accident_risk=0.0)
+
+        # 3. KỸ THUẬT NỐI ĐƯỜNG MẠNG (Không phá hủy cạnh gốc):
+        # Tính khoảng cách hình học từ điểm click đến nút giao u và nút giao v
+        lat_u, lon_u = self.G.nodes[u]["coords"]
+        lat_v, lon_v = self.G.nodes[v]["coords"]
+        
+        dist_to_u = osm_routing._haversine_km(clicked_lat, clicked_lng, lat_u, lon_u)
+        dist_to_v = osm_routing._haversine_km(clicked_lat, clicked_lng, lat_v, lon_v)
+
+        # Trích xuất một phần geometry cũ để làm đường dẫn trực quan cho frontend highlight
+        orig_geom = edge_attrs.get("geometry", [])
+        
+        # Cạnh nối từ điểm click chuột vào nút giao U
+        geom_to_u = [[clicked_lat, clicked_lng], list(best_projection)] + orig_geom[:best_geometry_index+1]
+        # Cạnh nối từ điểm click chuột vào nút giao V
+        geom_from_v = [[clicked_lat, clicked_lng], list(best_projection)] + orig_geom[best_geometry_index+1:]
+
+        # Lấy thông số mờ của cạnh nền áp sang để bảo toàn độ phạt kẹt xe thực tế
+        p, n_val, neg = edge_attrs["P"], edge_attrs["N"], edge_attrs["n"]
+
+        # Thêm 2 cạnh kết nối tạm thời từ điểm click tự do vào mạng lưới trục chính
+        self.G.add_edge(virtual_node_id, u, distance=dist_to_u, P=p, N=n_val, n=neg, 
+                        road_type="local", geometry=geom_to_u)
+        self.G.add_edge(virtual_node_id, v, distance=dist_to_v, P=p, N=n_val, n=neg, 
+                        road_type="local", geometry=geom_from_v)
+
+        # 4. Ép hệ thống tính toán lại toàn bộ ma trận liên thuộc liên quan
+        self.func_3_3_1_compute_incidence()
+        return virtual_node_id
+
+    def _point_to_segment_distance(self, px, py, x1, y1, x2, y2):
+        """Hàm bổ trợ tính khoảng cách từ điểm P đến đoạn thẳng AB và trả về điểm hình chiếu"""
+        dx, dy = x2 - x1, y2 - y1
+        if dx == 0 and dy == 0:
+            return math.sqrt((px - x1)**2 + (py - y1)**2), (x1, y1)
+            
+        t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
+        t = max(0, min(1, t)) # Giới hạn trong đoạn thẳng
+        
+        proj_x = x1 + t * dx
+        proj_y = y1 + t * dy
+        return math.sqrt((px - proj_x)**2 + (py - proj_y)**2), (proj_x, proj_y)

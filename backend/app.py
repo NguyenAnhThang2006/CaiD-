@@ -77,6 +77,10 @@ def get_graph():
     """Returns the current state of the graph nodes, edges, and incidence pairs."""
     nodes = []
     for node, attrs in pfig.G.nodes(data=True):
+        # BỎ QUA không trả về các nút ảo nếu người dùng không dùng đến nữa
+        if str(node).startswith("V_"):
+            continue
+            
         nodes.append({
             "id": node,
             "coords": attrs["coords"],
@@ -90,6 +94,10 @@ def get_graph():
         
     edges = []
     for u, v, attrs in pfig.G.edges(data=True):
+        # BỎ QUA các cạnh ảo liên quan đến điểm click tự do cũ
+        if str(u).startswith("V_") or str(v).startswith("V_"):
+            continue
+            
         edge_name = tuple(sorted([u, v]))
         inc_u = pfig.incidence_data.get((u, edge_name), (0.0, 0.0, 1.0))
         inc_v = pfig.incidence_data.get((v, edge_name), (0.0, 0.0, 1.0))
@@ -170,32 +178,104 @@ def update_element_physical():
         "fuzzy": [p, n_val, neg]
     })
 
+def get_route_geometry(path_nodes):
+    """
+    Trích xuất chuỗi tọa độ bám đường chuẩn xác tuyệt đối, 
+    tự động đảo hướng mảng hình học nếu path đi ngược hướng cạnh đồ thị.
+    """
+    full_coords = []
+    
+    for i in range(len(path_nodes) - 1):
+        u = path_nodes[i]
+        v = path_nodes[i+1]
+        
+        if pfig.G.has_edge(u, v):
+            edge_data = pfig.G[u][v]
+            geom = edge_data.get("geometry", [])
+            
+            if len(geom) >= 2:
+                # Kiểm tra hướng: Nếu geometry có điểm cuối gần với node U hơn điểm đầu,
+                # chứng tỏ mảng geometry đang lưu ngược hướng di chuyển thực tế (U -> V). -> Đảo mảng!
+                # Sử dụng công thức khoảng cách Euclid cơ bản để check nhanh
+                coord_u = pfig.G.nodes[u]["coords"]
+                dist_start_to_u = (geom[0][0] - coord_u[0])**2 + (geom[0][1] - coord_u[1])**2
+                dist_end_to_u = (geom[-1][0] - coord_u[0])**2 + (geom[-1][1] - coord_u[1])**2
+                
+                if dist_end_to_u < dist_start_to_u:
+                    geom = geom[::-1] # Đảo ngược mảng để đi đúng từ U sang V
+                
+                # Gộp vào mảng tổng, loại bỏ điểm đầu để tránh lặp trùng với điểm cuối đoạn trước
+                if len(full_coords) > 0:
+                    full_coords.extend(geom[1:])
+                else:
+                    full_coords.extend(geom)
+            else:
+                # Fallback nếu cạnh ảo quá ngắn không có hình học chi tiết
+                coord_u = list(pfig.G.nodes[u]["coords"])
+                coord_v = list(pfig.G.nodes[v]["coords"])
+                if len(full_coords) > 0:
+                    full_coords.append(coord_v)
+                else:
+                    full_coords.extend([coord_u, coord_v])
+                    
+    return full_coords
+
+
 @app.route('/api/route', methods=['POST'])
 def calculate_route():
-    """Calculates PFIG route vs. Traditional Dijkstra route."""
+    """Calculates PFIG route vs. Traditional Dijkstra route supporting dynamic click points."""
     data = request.json or {}
-    source = data.get("source", "My Dinh")
-    target = data.get("target", "HUST")
+    
+    source_input = data.get("source", "My Dinh")
+    target_input = data.get("target", "HUST")
     
     alpha = float(data.get("alpha", 0.5))
     beta = float(data.get("beta", 0.3))
     gamma = float(data.get("gamma", 0.2))
     
-    # 1. PFIG Route
+    # Khởi tạo đồ thị sạch để tránh tích lũy trùng lặp node ảo từ các lần bấm trước
+    global pfig
+    pfig = PFIGGraph() 
+    update_all_graph_traffic(current_weather, current_time_of_day)
+
+    source = source_input
+    target = target_input
+
+    # 2. Xử lý điểm đi tự do (Mảng [lat, lng])
+    if isinstance(source_input, list) and len(source_input) == 2:
+        virtual_src = pfig.inject_temporary_click_node(source_input[0], source_input[1], "V_START")
+        if virtual_src:
+            source = virtual_src
+        else:
+            return jsonify({"status": "error", "message": "Điểm đi nằm quá xa hành lang giao thông demo!"}), 400
+
+    # 3. Xử lý điểm đến tự do (Mảng [lat, lng])
+    if isinstance(target_input, list) and len(target_input) == 2:
+        virtual_tgt = pfig.inject_temporary_click_node(target_input[0], target_input[1], "V_END")
+        if virtual_tgt:
+            target = virtual_tgt
+        else:
+            return jsonify({"status": "error", "message": "Điểm đến nằm quá xa hành lang giao thông demo!"}), 400
+
+    # Tính ma trận liên thuộc PFIG sau khi đã chèn hết các node ảo cần thiết
+    pfig.func_3_3_1_compute_incidence()
+
+    # Chạy các thuật toán tìm đường trên đồ thị đã cấu trúc hóa điểm tự do
     pfig_path, pfig_dist, pfig_cost = pfig.compute_pfig_route(source, target, alpha, beta, gamma)
     pfig_intensity_data = pfig.get_path_intensity(pfig_path)
     
-    # Calculate travel duration based on current edge speeds
     pfig_duration = 0.0
     pfig_delay = 0.0
     for i in range(len(pfig_path) - 1):
         u = pfig_path[i]
         v = pfig_path[i+1]
-        sim = maps_client.simulate_traffic_data(u, v, current_weather, current_time_of_day, distance_km=pfig.G[u][v]["distance"])
+        # Bẫy lỗi: Bảo đảm lấy đúng key khoảng cách (fallback về distance_km nếu cần)
+        edge_dist = pfig.G[u][v].get("distance_km", pfig.G[u][v].get("distance", 1.0))
+        sim = maps_client.simulate_traffic_data(u, v, current_weather, current_time_of_day, distance_km=edge_dist)
         pfig_duration += sim["duration_mins"]
         pfig_delay += sim["delay_mins"]
         
-    # 2. Dijkstra Route
+    # Dijkstra Route
     dijkstra_path, dijkstra_dist = pfig.compute_shortest_path_dijkstra(source, target)
     dijkstra_intensity_data = pfig.get_path_intensity(dijkstra_path)
     
@@ -204,48 +284,38 @@ def calculate_route():
     for i in range(len(dijkstra_path) - 1):
         u = dijkstra_path[i]
         v = dijkstra_path[i+1]
-        sim = maps_client.simulate_traffic_data(u, v, current_weather, current_time_of_day, distance_km=pfig.G[u][v]["distance"])
+        edge_dist = pfig.G[u][v].get("distance_km", pfig.G[u][v].get("distance", 1.0))
+        sim = maps_client.simulate_traffic_data(u, v, current_weather, current_time_of_day, distance_km=edge_dist)
         dijkstra_duration += sim["duration_mins"]
         dijkstra_delay += sim["delay_mins"]
         
-    # 3. Identify Avoided Bottlenecks
-    # Look at nodes on Dijkstra path not present in PFIG path
+    # Tính toán các điểm nghẽn tránh được
     avoided_bottlenecks = []
     if dijkstra_path and pfig_path:
         pfig_nodes = set(pfig_path)
         for node in dijkstra_path:
-            if node not in pfig_nodes:
+            if node not in pfig_nodes and node in pfig.G.nodes:
                 node_attr = pfig.G.nodes[node]
-                # If negative flow (congestion) or neutral (hesitation) is high, it's a bottleneck
-                if node_attr["n"] > 0.3 or node_attr["N"] > 0.4:
+                if node_attr.get("n", 0) > 0.3 or node_attr.get("N", 0) > 0.4:
                     avoided_bottlenecks.append({
                         "node": node,
-                        "P": round(node_attr["P"], 2),
-                        "N": round(node_attr["N"], 2),
-                        "n": round(node_attr["n"], 2)
+                        "P": round(node_attr.get("P", 0.33), 2),
+                        "N": round(node_attr.get("N", 0.33), 2),
+                        "n": round(node_attr.get("n", 0.34), 2)
                     })
                     
-    # 4. Identify structural issues (Bridges, Cut Pairs) for user analysis
     bridges, cut_pairs = pfig.identify_structural_vulnerabilities(source, target)
-    
-    # Serialize bridges/cut-pairs
-    formatted_bridges = []
-    for b in bridges:
-        formatted_bridges.append({
-            "edge": b["edge"],
-            "reason": b["reason"]
-        })
-    formatted_cut_pairs = []
-    for cp in cut_pairs:
-        formatted_cut_pairs.append({
-            "node": cp["node"],
-            "edge": cp["edge"],
-            "reason": cp["reason"]
-        })
+    formatted_bridges = [{"edge": b["edge"], "reason": b["reason"]} for b in bridges]
+    formatted_cut_pairs = [{"node": cp["node"], "edge": cp["edge"], "reason": cp["reason"]} for cp in cut_pairs]
+
+    # Trích xuất mảng hình học trực tiếp để frontend chỉ việc vẽ mà không cần tra cứu dữ liệu tĩnh
+    pfig_geom = get_route_geometry(pfig_path)
+    dijkstra_geom = get_route_geometry(dijkstra_path)
 
     return jsonify({
         "pfig": {
             "path": pfig_path,
+            "geometry": pfig_geom, # Bổ sung thêm trường này
             "distance_km": round(pfig_dist, 2),
             "duration_mins": round(pfig_duration, 1),
             "delay_mins": round(pfig_delay, 1),
@@ -254,6 +324,7 @@ def calculate_route():
         },
         "dijkstra": {
             "path": dijkstra_path,
+            "geometry": dijkstra_geom, # Bổ sung thêm trường này
             "distance_km": round(dijkstra_dist, 2),
             "duration_mins": round(dijkstra_duration, 1),
             "delay_mins": round(dijkstra_delay, 1),
@@ -261,10 +332,7 @@ def calculate_route():
             "steps": dijkstra_intensity_data["steps"]
         },
         "avoided_bottlenecks": avoided_bottlenecks,
-        "structural": {
-            "bridges": formatted_bridges,
-            "cut_pairs": formatted_cut_pairs
-        }
+        "structural": {"bridges": formatted_bridges, "cut_pairs": formatted_cut_pairs}
     })
 
 @app.route('/api/update_traffic', methods=['POST'])
